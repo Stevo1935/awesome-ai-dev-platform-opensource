@@ -1,58 +1,18 @@
-import React from "react";
-import Endpoints, {getEndpoint} from "../endpoints";
-
-export type TApiCallOptions = Partial<Omit<RequestInit, "signal" | "body">> & {
-  abortController?: AbortController,
-  autoRefreshToken?: boolean,
-  body?: any,
-  params?: { [k: string]: string },
-  query?: URLSearchParams,
-};
-
-export type TApiCallResult = {
-  controller: AbortController,
-  promise: Promise<Response>,
-}
-
-export type TApiProvider = {
-  call: (endpoint: keyof typeof Endpoints, options?: TApiCallOptions) => TApiCallResult,
-  getCsrfToken: () => string,
-}
-
-export const ApiContext = React.createContext<TApiProvider>({
-  call: () => ({
-    controller: new AbortController(),
-    promise: Promise.resolve(new Response()),
-  }),
-  getCsrfToken: () => "",
-})
-
 export default function ApiProvider(props: React.PropsWithChildren) {
   const [csrfToken] = React.useState<string>(
     document.querySelector(`[name="csrfmiddlewaretoken"]`)?.getAttribute("value") ?? ""
   );
 
-  const getCsrfToken = React.useCallback(() => {
-    return csrfToken;
-  }, [csrfToken]);
+  const getCsrfToken = React.useCallback(() => csrfToken, [csrfToken]);
 
   function handleError(e: any, reject: (reason?: any) => void) {
     let isHandled = false;
-
     if (e instanceof DOMException) {
-      if (e.name === "AbortError") {
-        isHandled = true;
-      } else if (e.name === "NetworkError") {
-        isHandled = true;
-      }
+      if (e.name === "AbortError") isHandled = true;
+      else if (e.name === "NetworkError") isHandled = true;
     }
-
     reject(e);
-
-    if (window.APP_SETTINGS.debug) {
-      console.error(e);
-    }
-
+    if (window.APP_SETTINGS.debug) console.error(e);
     return isHandled;
   }
 
@@ -62,7 +22,7 @@ export default function ApiProvider(props: React.PropsWithChildren) {
   ): TApiCallResult => {
     let isNotFormData = true;
     const abortController = options?.abortController ?? new AbortController();
-    const headers =  (options?.headers ?? {}) as { [key: string]: string };
+    const headers = (options?.headers ?? {}) as { [key: string]: string };
     const credentials = options?.credentials ?? "same-origin";
     const queries = options?.query ? "?" + options?.query : "";
     let body = options?.body;
@@ -70,37 +30,34 @@ export default function ApiProvider(props: React.PropsWithChildren) {
     headers["pragma"] = "no-cache";
     headers["cache-control"] = "no-cache";
 
-    if (body && body instanceof FormData) {
-      isNotFormData = false;
-    }
+    if (body && body instanceof FormData) isNotFormData = false;
 
     if (isNotFormData && !Object.hasOwn(headers, "Content-Type")) {
       headers["Content-Type"] = "application/json";
       headers["Accept"] = "application/json";
-
-      if (body) {
-        body = JSON.stringify(body);
-      }
+      if (body) body = JSON.stringify(body);
     }
 
     let [method, url] = getEndpoint(endpoint);
-    const finalOptions = options ?? {};
+    
+    
+    // Add CSRF token for state-changing requests
+    if (method !== 'GET' && method !== 'HEAD' && csrfToken) {
+      headers["X-CSRFToken"] = csrfToken;
+    }
 
+    const finalOptions = options ?? {};
     Object.assign(finalOptions, {
       cache: options?.cache ?? "no-cache",
       credentials,
-      headers,
+      headers,  // ← Now headers includes CSRF token
       method,
       signal: abortController.signal,
     });
 
-    if (body) {
-      Object.assign(finalOptions, {body});
-    }
+    if (body) Object.assign(finalOptions, { body });
 
-    if (window.APP_SETTINGS.debug) {
-      console.info(Endpoints[endpoint], finalOptions);
-    }
+    if (window.APP_SETTINGS.debug) console.info(Endpoints[endpoint], finalOptions);
 
     if (options?.params) {
       for (let pk in options.params) {
@@ -109,14 +66,8 @@ export default function ApiProvider(props: React.PropsWithChildren) {
     }
 
     let hostname = window.APP_SETTINGS.hostname;
-
-    if (!hostname.endsWith("/")) {
-      hostname = hostname + "/";
-    }
-
-    if (url.startsWith("http://") || url.startsWith("https://")) {
-      hostname = "";
-    }
+    if (!hostname.endsWith("/")) hostname += "/";
+    if (url.startsWith("http://") || url.startsWith("https://")) hostname = "";
 
     const promise = new Promise<Response>((resolve, reject) => {
       try {
@@ -128,18 +79,13 @@ export default function ApiProvider(props: React.PropsWithChildren) {
       }
     });
 
-    return {controller: abortController, promise};
-  }, []);
+    return { controller: abortController, promise };
+  }, [csrfToken]);
 
-  const providerValue = React.useMemo<TApiProvider>(() => {
-    return {
-      call,
-      getCsrfToken,
-    };
-  }, [
+  const providerValue = React.useMemo<TApiProvider>(() => ({
     call,
     getCsrfToken,
-  ]);
+  }), [call, getCsrfToken]);
 
   return (
     <ApiContext.Provider value={providerValue}>
